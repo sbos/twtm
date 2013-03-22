@@ -1,3 +1,5 @@
+require("Options")
+using OptionsMod
 
 function q_z(log_theta, log_phi, word_mask)
     K, V = size(log_phi)
@@ -18,7 +20,8 @@ function q_z(log_theta, log_phi, word_mask)
     return z
 end
 
-function q_theta(n, alpha, p0, L, resample=true, smooth=true) 
+function q_theta(n, alpha, p0, L, opts::Options)
+    @defaults opts resample=true smooth=true
     T, V = size(n)
     K = size(alpha, 1)
     
@@ -30,7 +33,7 @@ function q_theta(n, alpha, p0, L, resample=true, smooth=true)
     let dir = Dirichlet(alpha + n[1, :]') 
         theta[1, :] = rand(dir, L)
         pt[1, :] = 0 
-        w[1, :] = vcat([logpdf(dir, theta[1, j]) for j=1:L]...)
+# w[1, :] = vcat([logpdf(dir, theta[1, j]) for j=1:L]...)
     end
 
     for i=2:T
@@ -44,7 +47,4 @@ function M_step(n, beta)
 
     return bsxfun(./, phi, sum(phi, 2))
 end
-
-function VEM(w, alpha, beta)
-
-end
+    end
