@@ -8,7 +8,7 @@ function q_z(log_theta, log_phi, docptr, wordval)
     for t = 1:T
         doc = wordval[docptr[t] : docptr[t+1] - 1]
         N = length(doc)
-        I = vec(repmat([1:K], N, 1))
+        I = squeeze(repmat([1:K], N, 1))
         J = vcat([ones(Int, K) * w for w in doc]...)
         data = zeros(N * K)
         for v in 1:N
@@ -51,60 +51,88 @@ function q_theta(n, alpha, p0, L, opts::Options)
         return rand(dist, length(w))
     end
 
-    let q = Dirichlet(alpha + n[1, :]'),
+    function adjust(w)
+        w -= max(w)
+        w -= log(sum(exp(w)))
+        return w
+    end
+
+    let q = Dirichlet(alpha + squeeze(n[1, :])),
         pr = Dirichlet(alpha),
-        N = sum(n[1, :])
-        theta[1, :] = rand(q, L)
-        pt[1, :] = 0 
-        w[1, :] = logpdf(pr, theta[1, :, :]) + vcat([logpdf(Multinomial(N, theta[1, j, :]'), n[1, :]') - logpdf(q, theta[1, j, :]) for j=1:L]...)
+        n_t = squeeze(n[1, :])
+
+        pt[1, :]    = 0
+        for j = 1:L
+            th = rand(q)
+            w[1, j] = logpdf(pr, th) + dot(log(th), n_t) - logpdf(q, th)
+            theta[1, j, :] = th
+        end
+
+        w[1, :] = adjust(w[1, :])
+    end
+
+    pdir = Dirichlet(alpha)
+
+    function f(currth, prevth)
+        if sum(abs(currth - prevth)) < 1e-10
+            return log(p0)
+        end
+        return log(1-p0) + logpdf(pdir, currth)
     end
 
     for t=2:T
-        idx = resample(exp(w[t-1, :]))
+        idx = resample(exp(vec(w[t-1, :])))
         theta[t-1, :, :] = theta[t-1, idx, :]
-        w[t-1, :]        = w[t-1, idx]
+        w[t-1, :]        = -log(L)
         pt[t-1, :]       = pt[t-1, idx]
 
-        let n = n[t, :]'
-            function pt(th)
-                a = p0 * prod(th .^ n)
-                b = (1-p0) * exp(log_dirmult(alpha) - log_dirmult(alpha + n))
+        let n_t = squeeze(n[t, :])
+            function pt_t(th)
+                a = p0 * prod(th .^ n_t)
+                b = (1-p0) * exp(log_dirmult(alpha) - log_dirmult(alpha + n_t))
                 return a / (a + b)
             end
 
-            dir = Dirichlet(alpha + n)
+            dir = Dirichlet(alpha + n_t)
             function q(th)
-                pt = pt(th)
-                if rand(Binomial(1, pt), 1)[1] == 1
-                    return th, log(pt), pt
+                pt_j = pt_t(th)
+                if rand(Binomial(1, pt_j), 1)[1] == 1
+                    return th, log(pt_j), pt_j
                 end
-                sample = vec(rand(dir, 1))
-                return sample, log(1-pt) + logpdf(dir, sample), pt
+                sample = squeeze(rand(dir, 1))
+                return sample, log(1-pt_j) + logpdf(dir, sample), pt_j
             end
 
-            N = sum(n)
-            pdir = Dirichlet(alpha)
             function g(th)
-                return sum(log(theta) .* n)
+                return dot(log(th), n_t)
             end
-
-            function f(currth, prevth)
-                if sum(abs(currth - prevth)) < 1e-10
-                    return log(p0)
-                end
-                return log(1-p0) + logpdf(pdir, currth)
-            end
-
+            
             for j=1:L
-                theta[t, j, :], w[t, j], pt[t, j] = propose(theta[t-1, j, :])
-                w[t, j] = w[t-1, j] + f(theta[t, j, :], theta[t-1, j, :]) + g(theta[t, j, :]) - w[t, j]
+                th_prev = vec(theta[t-1, j, :])
+                theta[t, j, :], w[t, j], pt[t, j] = q(th_prev)
+                th_curr = vec(theta[t, j, :])
+                w[t, j] = w[t-1, j] + f(th_curr, th_prev) + g(th_curr) - w[t, j]
             end
+
+            w[t, :] = adjust(w[t, :])
+            w_t = vec(exp(w[t, :]))
         end
     end
 
     if smoothing == true
-        for t=N:-1:1
-            
+        idx = resample(exp(vec(w[T, :])))
+        theta[T, :, :] = theta[T, idx, :]
+        pt[T, :] = pt[T, idx]
+
+        for t=T-1:-1:1
+            for j=1:L
+                w[t, j] = w[t, j] + f(vec(theta[t+1, j, :]), vec(theta[t, j, :]))
+            end
+
+            w[t, :] = adjust(w[t, :])
+            idx = resample(exp(vec(w[t, :])))
+            theta[t, :, :] = theta[t, idx, :]
+            pt[t, :] = pt[t, idx]
         end
     end
 
@@ -112,11 +140,14 @@ function q_theta(n, alpha, p0, L, opts::Options)
     sample_theta = zeros(T, K)
     sample_pt    = zeros(T)
     for t=1:T
-        w = exp(w[t, :])
-        log_theta[t, :]    = sum(log(theta[t, :, :]) .* w)
-        sample_theta[t, :] = sum(    theta[t, :, :]  .* w)
-        sample_pt[t]       = sum(       pt[t, :]     .* w)
+        w_t = vec(exp(w[t, :]))
+        th = squeeze(theta[t, :, :])
+        log_theta[t, :]    = sum(bsxfun(.*, log(th), w_t), 1)
+        sample_theta[t, :] = sum(bsxfun(.*,      th, w_t), 1)
+        sample_pt[t, :]    = sum(bsxfun(.*, squeeze(pt[t, :]), w_t))
     end
+
+    @check_used opts
 
     return log_theta, sample_theta, sample_pt
 end
