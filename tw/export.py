@@ -20,7 +20,9 @@ users = tweets.distinct('user.screen_name')
 
 word2num = {}
 num2word = []
+word_count = []
 
+feeds = []
 for user in users:
 	user_feed = []
 	for tweet in tweets.find({'user.screen_name': user}, fields={'text': 1}).sort( [('id', 1)] ):
@@ -35,20 +37,28 @@ for user in users:
 				wid = len(num2word) + 1
 				word2num[word] = wid
 				num2word.append(word)
+				word_count.append(0)
+			word_count[wid-1] += 1
 			num_repr.append(wid)
 
 		user_feed.append(num_repr)
+	print 'user %s retrieved' % user
+	feeds.append(user_feed)
 
-	with open(join(output_dir, user), "w") as output:
+with open(join(output_dir, 'data'), "w") as output:
+	user_num = 1
+	for user_feed in feeds:
 		tweet_num = 1
+		output.write('----\n')
 		for num_repr in user_feed:
 			for wid in num_repr:
 				output.write('%d %d %d\n' % (tweet_num, wid, 1))
 			tweet_num += 1
-		print 'user %s processed, %d tweets' % (user, tweet_num)
+		print 'user %d/%d processed, %d tweets' % (user_num, len(feeds), tweet_num)
+		user_num += 1
 
 with open(join(output_dir, "__num2word"), "w") as output:
 	for w in xrange(len(num2word)):
-		output.write('%s %s\n' % (w, num2word[w]))
+		output.write('%d %s %d\n' % (w+1, num2word[w], word_count[w]))
 
 	print 'num2word index written'
