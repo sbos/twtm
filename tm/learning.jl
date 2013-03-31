@@ -37,69 +37,68 @@ function count_z(docs, z)
 end
 
 function q_theta(n, alpha, p0, L, opts::Options)
-    @defaults opts smoothing=true
+    @defaults opts filtering=true smoothing=false
     T, V = size(n)
     K = size(alpha, 1)
     
     theta = zeros(T, L, K)
     log_theta = zeros(T, L, K)
     pt = zeros(T, L)
-    w = zeros(T, L)
-
-    function resample(w)
-        dist = Categorical(w)
-        return rand(dist, length(w))
+    w = None
+    if filtering == true
+        w = zeros(T, L)
     end
-
-    function adjust(w)
-        w -= max(w)
-        w -= log(sum(exp(w)))
-        return w
-    end
-
-    let q = Dirichlet(alpha + squeeze(n[1, :])),
+     
+    let q = Dirichlet(alpha + vec(n[1, :])),
         pr = Dirichlet(alpha),
-        n_t = squeeze(n[1, :])
+        n_t = vec(n[1, :])
 
-        pt[1, :]    = 0
+        pt[1, :] = 0
         for j = 1:L
             th = rand(q)
-            w[1, j] = logpdf(pr, th) + dot(log(th), n_t) - logpdf(q, th)
+            if filtering == true
+                w[1, j] = logpdf(pr, th) + dot(log(th), n_t) - logpdf(q, th)
+            end
             theta[1, j, :] = th
         end
 
-        w[1, :] = adjust(w[1, :])
+        if filtering == true
+            w[1, :] = adjust(w[1, :])
+        end
     end
 
     pdir = Dirichlet(alpha)
 
     function f(currth, prevth)
-        if sum(abs(currth - prevth)) < 1e-10
+        if sum((currth - prevth) .^ 2) < 1e-10
             return log(p0)
         end
         return log(1-p0) + logpdf(pdir, currth)
     end
 
     for t=2:T
-        idx = resample(exp(vec(w[t-1, :])))
-        theta[t-1, :, :] = theta[t-1, idx, :]
-        w[t-1, :]        = -log(L)
-        pt[t-1, :]       = pt[t-1, idx]
+        if filtering == true
+            idx              = resample(exp(vec(w[t-1, :])))
+            assert(length(idx) == L)
+            theta[t-1, :, :] = theta[t-1, idx, :]
+            w[t-1, :]        = -log(L)
+            pt[t-1, :]       = pt[t-1, idx]
+        end
 
-        let n_t = squeeze(n[t, :])
+        let n_t = vec(n[t, :])
             function pt_t(th)
                 a = p0 * prod(th .^ n_t)
-                b = (1-p0) * exp(log_dirmult(alpha) - log_dirmult(alpha + n_t))
+                b = (1 - p0) * exp(log_dirmult(alpha) - log_dirmult(alpha + n_t))
                 return a / (a + b)
             end
 
             dir = Dirichlet(alpha + n_t)
             function q(th)
                 pt_j = pt_t(th)
-                if rand(Binomial(1, pt_j), 1)[1] == 1
+                if rand(Bernoulli(pt_j)) == 1
                     return th, log(pt_j), pt_j
                 end
-                sample = squeeze(rand(dir, 1))
+                sample = rand(dir)
                 return sample, log(1-pt_j) + logpdf(dir, sample), pt_j
             end
 
@@ -109,17 +108,20 @@ function q_theta(n, alpha, p0, L, opts::Options)
             
             for j=1:L
                 th_prev = vec(theta[t-1, j, :])
-                theta[t, j, :], w[t, j], pt[t, j] = q(th_prev)
-                th_curr = vec(theta[t, j, :])
-                w[t, j] = w[t-1, j] + f(th_curr, th_prev) + g(th_curr) - w[t, j]
+                theta[t, j, :], q_t_j, pt[t, j] = q(th_prev)
+                if filtering == true
+                    th_curr = vec(theta[t, j, :])
+                    w[t, j] = w[t-1, j] + f(th_curr, th_prev) + g(th_curr) - q_t_j
+                end
             end
 
-            w[t, :] = adjust(w[t, :])
-            w_t = vec(exp(w[t, :]))
+            if filtering == true
+                w[t, :] = adjust(w[t, :])
+            end
         end
     end
 
-    if smoothing == true
+    if filtering == true && smoothing == true
         idx = resample(exp(vec(w[T, :])))
         theta[T, :, :] = theta[T, idx, :]
         pt[T, :] = pt[T, idx]
@@ -131,6 +133,7 @@ function q_theta(n, alpha, p0, L, opts::Options)
 
             w[t, :] = adjust(w[t, :])
             idx = resample(exp(vec(w[t, :])))
+            assert(length(idx) == L)
             theta[t, :, :] = theta[t, idx, :]
             pt[t, :] = pt[t, idx]
         end
@@ -140,11 +143,20 @@ function q_theta(n, alpha, p0, L, opts::Options)
     sample_theta = zeros(T, K)
     sample_pt    = zeros(T)
     for t=1:T
-        w_t = vec(exp(w[t, :]))
         th = squeeze(theta[t, :, :])
-        log_theta[t, :]    = sum(bsxfun(.*, log(th), w_t), 1)
-        sample_theta[t, :] = sum(bsxfun(.*,      th, w_t), 1)
-        sample_pt[t, :]    = sum(bsxfun(.*, squeeze(pt[t, :]), w_t))
+        if filtering == true
+            w_t = vec(exp(w[t, :]))
+            assert(abs(sum(w_t) - 1) < 1e-5)
+            log_theta[t, :]    = sum(bsxfun(.*, log(th), w_t), 1)
+            sample_theta[t, :] = sum(bsxfun(.*,      th, w_t), 1)
+            sample_pt[t]       = sum(bsxfun(.*, vec(pt[t, :]), w_t))    
+        else
+            log_theta[t, :]    = sum(log(th), 1) / L
+            sample_theta[t, :] = sum(th, 1) / L
+            sample_pt[t]       = mean(pt[t, :])
+        end
+        assert(abs(sum(sample_theta[t, :]) - 1) < 1e-5)
+        assert(sample_pt[t] >= 0.0 && sample_pt[t] - 1 < 1e-5)
     end
 
     @check_used opts
@@ -152,11 +164,31 @@ function q_theta(n, alpha, p0, L, opts::Options)
     return log_theta, sample_theta, sample_pt
 end
 
-function M_step(n, beta)
-    K, V = size(n)
-    phi = n + beta - 1
+function E_step(docs, alpha, phi, p0::Float64, L::Int, maxiter::Int, opts::Options)
+    @defaults opts filtering=true smoothing=false
+    V, T = size(docs)
+    K = length(alpha)
+    n = rand(Dirichlet(alpha), T)
+    log_theta, theta, pt = q_theta(n, alpha, p0, L, opts)
+
+    log_phi = log(phi)
+    z = null
+    for iter=1:maxiter
+        z = q_z(log_theta, log_phi, docs.colptr, docs.rowval)
+        n = count_z(docs, z)
+        log_theta, theta, pt = q_theta(n, alpha, p0, L, opts)
+    end
+
+    @check_used opts
+
+    return theta, z, pt
+end
+
+function M_step(z, beta)
+    K, V = size(z)
+    phi = z + beta - 1
 
     return bsxfun(./, phi, sum(phi, 2))
 end
 
-export q_z, count_z, q_theta, M_step
+export q_z, count_z, q_theta, E_step, M_step
