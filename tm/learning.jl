@@ -48,7 +48,7 @@ function q_theta(n, alpha, p0, L, opts::Options)
     if filtering == true
         w = zeros(T, L)
     end
-     
+    
     let q = Dirichlet(alpha + vec(n[1, :])),
         pr = Dirichlet(alpha),
         n_t = vec(n[1, :])
@@ -184,11 +184,49 @@ function E_step(docs, alpha, phi, p0::Float64, L::Int, maxiter::Int, opts::Optio
     return theta, z, pt
 end
 
-function M_step(z, beta)
-    K, V = size(z)
-    phi = z + beta - 1
+function M_step(docs, z, beta::FloatingPoint)
+    T = length(z)
+    V, K = size(z[1])
+    phi = ones(K, V) * beta - 1
 
-    return bsxfun(./, phi, sum(phi, 2))
+    for t=1:T
+        idx = docs.colptr[t]:docs.colptr[t+1]-1
+        wc = docs.nzval[idx]
+        w = docs.rowval[idx] 
+        for k=1:K
+            z_k = z[t].nzval[z[t].colptr[k]:z[t].colptr[k+1]-1]
+            phi[k, w] += dot(wc, z_k)
+        end
+    end
+
+    for k=1:K
+        for v=1:V
+            if phi[k, v] < 0.0
+                phi[k, v] = 0.0
+            end
+        end
+    end
+
+    phi = bsxfun(./, phi, sum(phi, 2))
+    return phi
 end
 
-export q_z, count_z, q_theta, E_step, M_step
+function VEM(docs, alpha, beta, p0, L, eiter, totaliter, opts::Options)
+    @defaults opts filtering=true smoothing=false
+
+    K = length(alpha)
+    V, T = size(docs)
+    phi = gen_phi(V, K, 1.0)
+    theta, z, pt = None, None, None
+    for iter=1:totaliter
+        theta, z, pt = E_step(docs, alpha, phi, p0, L, eiter, opts)
+        phi = M_step(docs, z, beta)
+        println("VEM iter=", iter, "/", totaliter)
+    end
+
+    @check_used opts
+
+    return z, theta, phi, pt
+end
+
+export q_z, count_z, q_theta, E_step, M_step, VEM
