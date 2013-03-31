@@ -52,7 +52,7 @@ while True:
         for i in xrange(len(tweet['entities']['hashtags'])):
             tweet['entities']['hashtags'][i]['text'] = tweet['entities']['hashtags'][i]['text'].lower()
 
-        # tweet['created_at'] = datetime.strptime(tweet['created_at'], '%a, %d %b %Y %H:%M:%S +0000')
+        tweet['created_at'] = datetime.strptime(tweet['created_at'], '%a, %d %b %Y %H:%M:%S +0000')
         # tweet['created_at'] = timezone('Europe/Moscow').localize(tweet['created_at'])
         # tweet['created_at'] = tweet['created_at'] - timedelta(hours=4)
 
