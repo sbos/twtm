@@ -4,7 +4,7 @@ using OptionsMod
 function q_z(log_theta, log_phi, docptr, wordval)
     K, V = size(log_phi)
     T = size(log_theta, 1)
-    z = Array(SparseMatrixCSC, T)
+    z = Array(SparseMatrixCSC{Float64, Int}, T)
     for t = 1:T
         doc = wordval[docptr[t] : docptr[t+1] - 1]
         N = length(doc)
@@ -49,6 +49,7 @@ function q_theta(n, alpha, p0, L, opts::Options)
         w = zeros(T, L)
     end
     
+#    println(vec(n[1, :]))
     let q = Dirichlet(alpha + vec(n[1, :])),
         pr = Dirichlet(alpha),
         n_t = vec(n[1, :])
@@ -184,33 +185,43 @@ function E_step(docs, alpha, phi, p0::Float64, L::Int, maxiter::Int, opts::Optio
     return theta, z, pt
 end
 
-function M_step(docs, z, beta::FloatingPoint)
-    T = length(z)
-    V, K = size(z[1])
+function estimate_phi(feeds::Array{Feed, 1}, zs::Array{WordAssignment, 1}, beta::FloatingPoint)
+    F = length(feeds)
+    V, K = size(zs[1][1])
+
     phi = ones(K, V) * beta - 1
 
-    for t=1:T
-        idx = docs.colptr[t]:docs.colptr[t+1]-1
-        wc = docs.nzval[idx]
-        w = docs.rowval[idx] 
-        for k=1:K
-            z_k = z[t].nzval[z[t].colptr[k]:z[t].colptr[k+1]-1]
-            phi[k, w] += dot(wc, z_k)
-        end
-    end
+    for f=1:F
+        docs = feeds[f]
+        z = zs[f]
+        V, T = size(docs)
 
-    for k=1:K
-        for v=1:V
-            if phi[k, v] < 0.0
-                phi[k, v] = 0.0
+        for t=1:T
+            word_idx = spcolidx(docs, t)
+            word_count = spcolval(docs, t)
+            for k=1:K
+                z_t_k = vec(dense(z[t][:, k]))
+#println(size(phi[k, word_idx]), size(word_count .* z_t_k[word_idx]))
+                phi[k, word_idx] += (word_count .* z_t_k[word_idx])'
             end
         end
     end
 
-    phi = bsxfun(./, phi, sum(phi, 2))
-    return phi
+    phi[phi .< 0.0] = 0
+
+    return bsxfun(./, phi, sum(phi, 2))
 end
 
+function estimate_phi(feed::Feed, z::WordAssignment, beta::FloatingPoint)
+    feeds = Array(Feed, 0)
+    push!(feeds, feed)
+    
+    zs = Array(WordAssignment, 0)
+    push!(zs, z)
+
+    return estimate_phi(feeds, zs, beta)
+end
+      
 function VEM(docs, alpha, beta, p0, L, eiter, totaliter, opts::Options)
     @defaults opts filtering=true smoothing=false
 
@@ -220,7 +231,7 @@ function VEM(docs, alpha, beta, p0, L, eiter, totaliter, opts::Options)
     theta, z, pt = None, None, None
     for iter=1:totaliter
         theta, z, pt = E_step(docs, alpha, phi, p0, L, eiter, opts)
-        phi = M_step(docs, z, beta)
+        phi = estimate_phi(docs, z, beta)
         println("VEM iter=", iter, "/", totaliter)
     end
 
@@ -229,4 +240,41 @@ function VEM(docs, alpha, beta, p0, L, eiter, totaliter, opts::Options)
     return z, theta, phi, pt
 end
 
-export q_z, count_z, q_theta, E_step, M_step, VEM
+function VEM2(feeds, alpha, beta, p0, L, eiter, totaliter, opts::Options)
+    @defaults opts filtering=true smoothing=false
+
+    K = length(alpha)
+    F = length(feeds)
+    V, T = size(feeds[1])
+    phi = gen_phi(V, K, 0.5)
+
+    thetas = Array(Any, 0)
+    zs = Array(SparseMatrixCSC{Float64, Int}, 0)
+    pts = Array(Any, 0)
+
+    for iter=1:totaliter
+        for f=1:F
+            thetas[f], zs[f], pts[f] = E_step(feeds[f], alpha, phi, p0, L, eiter, opts)
+            println("E-step feed=", f, "/", F)
+        end
+        z = hcat(x)
+        phi = M_step(docs, z, beta)
+        println("VEM iter=", iter, "/", totaliter)
+    end
+
+    @check_used opts
+
+    return zs, thetas, phi, pts
+end
+
+function likelihood(z, phi)
+    log_phi = log(phi)
+    T = length(z)
+    value = 0.0
+    for t=1:T
+         
+    end
+    return value
+end
+
+export q_z, count_z, q_theta, E_step, estimate_phi, VEM, VEM2, likelihood

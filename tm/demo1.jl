@@ -12,6 +12,7 @@ T = 100
 p0 = 0.8
 
 phi = gen_phi(V, K, beta)
+
 theta, pt = gen_theta(T, alpha, p0)
 docs, n = gen_docs(20, theta, phi)
 
@@ -48,18 +49,10 @@ est_theta, est_z, est_pt = E_step(docs, alpha, phi, p0, L, 20, fopts)
 println("theta(z) estimation error (full E-step, phi is true):")
 println(mean(sum(abs(est_theta - theta), 2)))
 
-est_phi = M_step(docs, z, beta)
+est_phi = estimate_phi(docs, z, beta)
 println("phi estimation error (z's are from E-step): ", mean(abs(est_phi - phi)))
 
-est_z, est_theta, est_phi, est_pt = VEM(docs, alpha, beta, p0, L, 10, 14, fopts)
-#println("phi estimation error (full VEM): ", mean(abs(est_phi - phi)))
-
-#println("theta estimation error (full VEM): ", mean(sum(abs(est_theta - theta), 2)))
-
-for t=1:T 
-#    println("t=", t, " ", vec(theta[t, :]), "/", vec(est_theta[t, :]))
-#    println("t=", t, " ", pt[t], "/", est_pt[t])
-end
+est_z, est_theta, est_phi, est_pt = VEM(docs, alpha, beta, p0, L, 10, 30, fopts)
 
 println(phi)
 println(est_phi)
