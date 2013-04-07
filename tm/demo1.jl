@@ -4,8 +4,8 @@ using TwitterTopicModeling
 require("Options")
 using OptionsMod
 
-K = 2
-V = 6
+K = 3
+V = 20
 alpha = ones(K) * 0.1
 beta = 0.01
 T = 100

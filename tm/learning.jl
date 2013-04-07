@@ -1,19 +1,22 @@
 require("Options")
 using OptionsMod
 
-function q_z(log_theta, log_phi, docptr, wordval)
+function q_z(log_theta, log_phi, docs)
     K, V = size(log_phi)
     T = size(log_theta, 1)
     z = Array(SparseMatrixCSC{Float64, Int}, T)
     for t = 1:T
-        doc = wordval[docptr[t] : docptr[t+1] - 1]
+        doc = spcolidx(docs, t)
         N = length(doc)
-        I = squeeze(repmat([1:K], N, 1))
+        I = vec(repmat([1:K], N, 1))
         J = vcat([ones(Int, K) * w for w in doc]...)
         data = zeros(N * K)
         for v in 1:N
             w = doc[v]
             z_t = exp(log_theta[t, :]' + log_phi[:, w])
+
+            assert(sum(isnan(z_t)) == 0, "oops, there is NaN somewhere")
+
             data[(v-1)*K + 1 : v*K] = z_t ./ sum(z_t)
         end
         z[t] = sparse(J, I, data, V, K)
@@ -27,17 +30,22 @@ function count_z(docs, z)
     n = zeros(T, K)
 
     for t=1:T
-        w = docs.nzval[docs.colptr[t]:docs.colptr[t+1]-1]
+        w = spcolval(docs, t)
         for k=1:K
-            z_k = z[t].nzval[z[t].colptr[k]:z[t].colptr[k+1]-1]
+            z_k = spcolval(z[t], k)
+#println(z_k)
             n[t, k] = dot(w, z_k)
         end
     end
+    
     return n
 end
 
 function q_theta(n, alpha, p0, L, opts::Options)
     @defaults opts filtering=true smoothing=false
+
+    assert(0 <= p0 <= 1.0, "p0 must be probability")
+
     T, V = size(n)
     K = size(alpha, 1)
     
@@ -47,9 +55,8 @@ function q_theta(n, alpha, p0, L, opts::Options)
     w = None
     if filtering == true
         w = zeros(T, L)
-    end
-    
-#    println(vec(n[1, :]))
+    end    
+
     let q = Dirichlet(alpha + vec(n[1, :])),
         pr = Dirichlet(alpha),
         n_t = vec(n[1, :])
@@ -96,6 +103,7 @@ function q_theta(n, alpha, p0, L, opts::Options)
             dir = Dirichlet(alpha + n_t)
             function q(th)
                 pt_j = pt_t(th)
+                assert(0.0 <= pt_j <= 1.0, "something is wrong with p_t: $pt_j")
                 if rand(Bernoulli(pt_j)) == 1
                     return th, log(pt_j), pt_j
                 end
@@ -144,7 +152,7 @@ function q_theta(n, alpha, p0, L, opts::Options)
     sample_theta = zeros(T, K)
     sample_pt    = zeros(T)
     for t=1:T
-        th = squeeze(theta[t, :, :])
+        th = squeeze(theta[t, :, :], [1])
         if filtering == true
             w_t = vec(exp(w[t, :]))
             assert(abs(sum(w_t) - 1) < 1e-5)
@@ -169,13 +177,13 @@ function E_step(docs, alpha, phi, p0::Float64, L::Int, maxiter::Int, opts::Optio
     @defaults opts filtering=true smoothing=false
     V, T = size(docs)
     K = length(alpha)
-    n = rand(Dirichlet(alpha), T)
+    n = bsxfun(.*, rand(Dirichlet(alpha), T), float(vec(sum(docs, 1))))
     log_theta, theta, pt = q_theta(n, alpha, p0, L, opts)
 
     log_phi = log(phi)
     z = null
     for iter=1:maxiter
-        z = q_z(log_theta, log_phi, docs.colptr, docs.rowval)
+        z = q_z(log_theta, log_phi, docs)
         n = count_z(docs, z)
         log_theta, theta, pt = q_theta(n, alpha, p0, L, opts)
     end
@@ -185,13 +193,16 @@ function E_step(docs, alpha, phi, p0::Float64, L::Int, maxiter::Int, opts::Optio
     return theta, z, pt
 end
 
-function estimate_phi(feeds::Array{Feed, 1}, zs::Array{WordAssignment, 1}, beta::FloatingPoint)
+function estimate_phi(feeds::Vector{Feed}, zs::Vector{WordAssignment}, beta::Float64)
     F = length(feeds)
     V, K = size(zs[1][1])
 
+    assert(F == length(zs))
+
     phi = ones(K, V) * beta - 1
 
-    for f=1:F
+    function pjob(f)
+        local_phi = zeros(K, V)
         docs = feeds[f]
         z = zs[f]
         V, T = size(docs)
@@ -199,20 +210,31 @@ function estimate_phi(feeds::Array{Feed, 1}, zs::Array{WordAssignment, 1}, beta:
         for t=1:T
             word_idx = spcolidx(docs, t)
             word_count = spcolval(docs, t)
+
             for k=1:K
                 z_t_k = vec(dense(z[t][:, k]))
-#println(size(phi[k, word_idx]), size(word_count .* z_t_k[word_idx]))
-                phi[k, word_idx] += (word_count .* z_t_k[word_idx])'
+                local_phi[k, word_idx] += (word_count .* z_t_k[word_idx])'
             end
         end
+
+        println("estimating phi, f=$f/$F")
+        return local_phi
     end
 
-    phi[phi .< 0.0] = 0
+    phi += @parallel (+) for f=1:F
+        pjob(f)
+    end
 
-    return bsxfun(./, phi, sum(phi, 2))
+    phi[phi .< 0.0] = realmin(Float64)
+
+    phi = bsxfun(./, phi, sum(phi, 2))
+
+    assert(sum(isnan(phi)) == 0, "Some parts of phi is NaN")
+
+    return phi
 end
 
-function estimate_phi(feed::Feed, z::WordAssignment, beta::FloatingPoint)
+function estimate_phi(feed::Feed, z::WordAssignment, beta::Float64)
     feeds = Array(Feed, 0)
     push!(feeds, feed)
     
@@ -222,43 +244,24 @@ function estimate_phi(feed::Feed, z::WordAssignment, beta::FloatingPoint)
     return estimate_phi(feeds, zs, beta)
 end
       
-function VEM(docs, alpha, beta, p0, L, eiter, totaliter, opts::Options)
-    @defaults opts filtering=true smoothing=false
-
-    K = length(alpha)
-    V, T = size(docs)
-    phi = gen_phi(V, K, 1.0)
-    theta, z, pt = None, None, None
-    for iter=1:totaliter
-        theta, z, pt = E_step(docs, alpha, phi, p0, L, eiter, opts)
-        phi = estimate_phi(docs, z, beta)
-        println("VEM iter=", iter, "/", totaliter)
-    end
-
-    @check_used opts
-
-    return z, theta, phi, pt
-end
-
-function VEM2(feeds, alpha, beta, p0, L, eiter, totaliter, opts::Options)
+function VEM(feeds::Vector{Feed}, alpha::Vector{Float64}, beta::FloatingPoint, p0::FloatingPoint, L::Int, eiter::Int, totaliter::Int, opts::Options)
     @defaults opts filtering=true smoothing=false
 
     K = length(alpha)
     F = length(feeds)
     V, T = size(feeds[1])
-    phi = gen_phi(V, K, 0.5)
+    phi = gen_phi(V, K, 1.0)
 
-    thetas = Array(Any, 0)
-    zs = Array(SparseMatrixCSC{Float64, Int}, 0)
-    pts = Array(Any, 0)
+    thetas = Array(Array{Float64, 2}, F)
+    zs = Array(WordAssignment, F)
+    pts = Array(Array{Float64, 1}, F)
 
     for iter=1:totaliter
         for f=1:F
             thetas[f], zs[f], pts[f] = E_step(feeds[f], alpha, phi, p0, L, eiter, opts)
             println("E-step feed=", f, "/", F)
         end
-        z = hcat(x)
-        phi = M_step(docs, z, beta)
+        phi = estimate_phi(feeds, zs, beta)
         println("VEM iter=", iter, "/", totaliter)
     end
 
@@ -266,6 +269,41 @@ function VEM2(feeds, alpha, beta, p0, L, eiter, totaliter, opts::Options)
 
     return zs, thetas, phi, pts
 end
+
+function PVEM(feeds::Vector{Feed}, alpha::Vector{Float64}, beta::FloatingPoint, p0::FloatingPoint, L::Int, eiter::Int, totaliter::Int, opts::Options)
+    @defaults opts filtering=true smoothing=false
+
+    K = length(alpha)
+    F = length(feeds)
+    V, T = size(feeds[1])
+    phi = gen_phi(V, K, 1.0)
+
+    thetas = Array(Array{Float64, 2}, F)
+    zs = Array(WordAssignment, F)
+    pts = Array(Array{Float64, 1}, F)
+
+    for iter=1:totaliter
+        function apply_e_step(f)
+            expectations = E_step(feeds[f], alpha, phi, p0, L, eiter, opts)
+            println("E-step feed=$f/$F")
+            return expectations
+        end
+
+        result = pmap(apply_e_step, [1:F])
+
+        for f=1:F
+            thetas[f], zs[f], pts[f] = result[f]
+        end
+
+        phi = estimate_phi(feeds, zs, beta)
+        println("VEM iter=", iter, "/", totaliter)
+    end
+
+    @check_used opts
+
+    return zs, thetas, phi, pts
+end
+
 
 function likelihood(z, phi)
     log_phi = log(phi)
@@ -277,4 +315,4 @@ function likelihood(z, phi)
     return value
 end
 
-export q_z, count_z, q_theta, E_step, estimate_phi, VEM, VEM2, likelihood
+export q_z, count_z, q_theta, E_step, estimate_phi, PVEM, VEM, likelihood
