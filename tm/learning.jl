@@ -1,6 +1,3 @@
-require("Options")
-using OptionsMod
-
 function q_z(log_theta, log_phi, docs)
     K, V = size(log_phi)
     T = size(log_theta, 1)
@@ -212,8 +209,9 @@ function estimate_phi(feeds::Vector{Feed}, zs::Vector{WordAssignment}, beta::Flo
             word_count = spcolval(docs, t)
 
             for k=1:K
-                z_t_k = vec(dense(z[t][:, k]))
-                local_phi[k, word_idx] += (word_count .* z_t_k[word_idx])'
+                z_t_k = spcolval(z[t], k) #vec(dense(z[t][:, k]))
+                assert(length(z_t_k) == length(word_count))
+                local_phi[k, word_idx] += (word_count .* z_t_k)' #(word_count .* z_t_k[word_idx])'
             end
         end
 
@@ -296,7 +294,7 @@ function PVEM(feeds::Vector{Feed}, alpha::Vector{Float64}, beta::FloatingPoint, 
         end
 
         phi = estimate_phi(feeds, zs, beta)
-        println("VEM iter=", iter, "/", totaliter)
+        println("VEM iter=", iter, "/", totaliter, " joint_prob=", joint_prob(feeds, thetas, zs, phi, p0, alpha, beta))
     end
 
     @check_used opts
